@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Scorebuddy Stats</string>
+    <string name="accessibility_service_description">Reads leg result screens from the Scorebuddy darts app to record player placements. Runs only while Scorebuddy is open. No data leaves the device except to the webhook URL you configure.</string>
+</resources>
