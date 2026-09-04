@@ -3,79 +3,74 @@ package com.example.scorebuddystats
 import kotlin.math.abs
 
 /**
- * Detects the moment a leg ends on the live Scorebuddy game screen.
+ * Detects Scorebuddy's "GAME SUMMARY" screen, which appears after each leg
+ * and shows a table already sorted by placement:
  *
- * Layout (per user's screenshot):
- *  - Left panel: current thrower's name (big, above) and remaining score
- *    (big yellow number, below) — this is whoever's turn it currently is.
- *  - Right panel: one row per other player, each row = name + remaining score.
- *  - A leg ends the instant the LEFT score reaches exactly 0. That player is
- *    the winner (placement 1). The remaining players are ranked by their
- *    remaining score ascending (lower remaining score = closer to finishing
- *    = better placement).
+ *   Rank   Name       Score   Darts   3d Av.  9d Av.  180  140+  100+
+ *   1      ROBOT 3    501     44      34,2    74,0    0    0     0
+ *   2      ROBOT 2    387     42      27,6    34,0    0    0     0
+ *   3      AI         137     42      9,8     0,0     0    0     0
  *
- * This works purely on relative text positions (leftmost score = current
- * thrower, row-grouping by vertical position) so it doesn't depend on fixed
- * pixel coordinates or on Scorebuddy exposing view IDs.
+ * We don't need to compute placement ourselves here - Scorebuddy already
+ * ranks the players. We just read off (rank, name) pairs from the table.
  */
 object LegDetector {
 
     data class LegEndResult(val legKey: String, val orderedPlayers: List<String>)
 
-    private val legHeaderRegex = Regex("(?i)LEG\\s*\\d+.*SET\\s*\\d+")
-    private val pureNumberRegex = Regex("^\\d{1,3}$")
+    private val rankRegex = Regex("^\\d{1,2}$")
+    private val excludedLabels = setOf(
+        "EXIT", "NEXT LEG", "GAME SUMMARY", "SCROLL", "RANK", "NAME",
+        "SCORE", "DARTS", "3D AV.", "9D AV.", "180", "140+", "100+"
+    )
 
     fun detect(nodes: List<NodeText>): LegEndResult? {
-        val legHeaderNode = nodes.firstOrNull { legHeaderRegex.containsMatchIn(it.text) } ?: return null
+        val titleNode = nodes.firstOrNull { it.text.equals("GAME SUMMARY", ignoreCase = true) }
+            ?: return null
+        val rankHeader = nodes.firstOrNull { it.text.equals("Rank", ignoreCase = true) }
+            ?: return null
+        val scoreHeader = nodes.firstOrNull { it.text.equals("Score", ignoreCase = true) }
+            ?: return null
 
-        val scoreCandidates = nodes.filter { pureNumberRegex.matches(it.text) }
-        if (scoreCandidates.isEmpty()) return null
+        // Only look at nodes below the header row, and left of the Score column
+        // (that region can only contain Rank numbers and player Names).
+        val bodyNodes = nodes.filter {
+            it.top > rankHeader.bottom &&
+                it !== titleNode &&
+                it.text.uppercase() !in excludedLabels
+        }
+        if (bodyNodes.isEmpty()) return null
 
-        // Current thrower = leftmost score on screen.
-        val leftScore = scoreCandidates.minByOrNull { it.left } ?: return null
-        if (leftScore.text != "0") return null // leg not finished yet
+        // Row height reference, used to cluster nodes into rows.
+        val avgHeight = bodyNodes.map { it.bottom - it.top }.average().takeIf { it > 0 } ?: 30.0
+        val rowTolerance = (avgHeight * 0.7).toInt().coerceAtLeast(10)
 
-        val leftName = findNameAbove(nodes, leftScore) ?: return null
-
-        val otherScores = scoreCandidates.filter { it !== leftScore }
-        val rowHeight = (leftScore.bottom - leftScore.top).coerceAtLeast(20)
-
-        val otherPlayers = otherScores.mapNotNull { scoreNode ->
-            val name = findNameLeftOf(nodes, scoreNode, rowHeight) ?: return@mapNotNull null
-            name to scoreNode.text.toInt()
+        // Cluster into rows by vertical position.
+        val sorted = bodyNodes.sortedBy { it.top }
+        val rows = mutableListOf<MutableList<NodeText>>()
+        for (node in sorted) {
+            val row = rows.lastOrNull { row -> abs(row.first().centerY - node.centerY) < rowTolerance }
+            if (row != null) row.add(node) else rows.add(mutableListOf(node))
         }
 
-        // Rank the rest: lowest remaining score first (closest to finishing).
-        val rankedOthers = otherPlayers.sortedBy { it.second }.map { it.first }
+        data class RankedRow(val rank: Int, val name: String, val rowSignature: String)
 
-        val orderedPlayers = listOf(leftName) + rankedOthers
-        return LegEndResult(legKey = legHeaderNode.text, orderedPlayers = orderedPlayers)
-    }
+        val rankedRows = rows.mapNotNull { row ->
+            val sortedRow = row.sortedBy { it.left }
+            val rankNode = sortedRow.getOrNull(0) ?: return@mapNotNull null
+            val nameNode = sortedRow.getOrNull(1) ?: return@mapNotNull null
+            if (!rankRegex.matches(rankNode.text)) return@mapNotNull null
+            if (rankRegex.matches(nameNode.text)) return@mapNotNull null // name must not be numeric
 
-    private fun findNameAbove(nodes: List<NodeText>, scoreNode: NodeText): String? {
-        return nodes
-            .filter {
-                it !== scoreNode &&
-                    it.top < scoreNode.top &&
-                    it.left < scoreNode.right && it.right > scoreNode.left && // horizontal overlap
-                    it.text.isNotBlank() &&
-                    !legHeaderRegex.containsMatchIn(it.text) &&
-                    !pureNumberRegex.matches(it.text)
-            }
-            .maxByOrNull { it.top } // closest one above the score
-            ?.text
-    }
+            val rowSignature = sortedRow.joinToString("|") { it.text }
+            RankedRow(rank = rankNode.text.toInt(), name = nameNode.text, rowSignature = rowSignature)
+        }
 
-    private fun findNameLeftOf(nodes: List<NodeText>, scoreNode: NodeText, rowHeight: Int): String? {
-        return nodes
-            .filter {
-                it !== scoreNode &&
-                    abs(it.centerY - scoreNode.centerY) < rowHeight &&
-                    it.left < scoreNode.left &&
-                    it.text.isNotBlank() &&
-                    !pureNumberRegex.matches(it.text)
-            }
-            .maxByOrNull { it.left } // the name label immediately to the left of the number
-            ?.text
+        if (rankedRows.isEmpty()) return null
+
+        val orderedPlayers = rankedRows.sortedBy { it.rank }.map { it.name }
+        val legKey = rankedRows.sortedBy { it.rank }.joinToString(";") { it.rowSignature }
+
+        return LegEndResult(legKey = legKey, orderedPlayers = orderedPlayers)
     }
 }
