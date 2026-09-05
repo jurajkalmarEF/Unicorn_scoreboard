@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+<LinearLayout
     android:orientation="vertical"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_height="wrap_content"
     android:padding="20dp">
 
     <TextView
@@ -25,18 +29,36 @@
         android:layout_marginTop="24dp"
         android:textStyle="bold"
         android:textSize="18sp"
-        android:text="2. (Voliteľné) Webhook URL na upload" />
+        android:text="2. Supabase pripojenie" />
 
-    <EditText
-        android:id="@+id/editWebhookUrl"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="https://..." />
-
-    <Button
-        android:id="@+id/btnSaveWebhook"
+    <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:text="REST URL (napr. https://xxxx.supabase.co/rest/v1/)" />
+
+    <EditText
+        android:id="@+id/editSupabaseUrl"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="https://xxxx.supabase.co/rest/v1/" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="API kľúč (publishable/anon)" />
+
+    <EditText
+        android:id="@+id/editSupabaseKey"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="sb_publishable_..." />
+
+    <Button
+        android:id="@+id/btnSaveSupabase"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
         android:text="Uložiť" />
 
     <TextView
@@ -67,3 +89,4 @@
         android:text="Zdieľať results.csv" />
 
 </LinearLayout>
+</ScrollView>

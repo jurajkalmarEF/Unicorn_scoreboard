@@ -55,7 +55,7 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
 
         Log.i(TAG, "Leg finished (${result.legKey}): placements = ${result.orderedPlayers}")
         val scored = PlacementScorer.score(result.orderedPlayers)
-        ResultsStore.saveLegResult(applicationContext, scored)
+        ResultsStore.saveLegResult(applicationContext, scored, result.legKey)
         lastProcessedLegKey = result.legKey
     }
 
