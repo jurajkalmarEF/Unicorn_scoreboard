@@ -16,11 +16,15 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
     private var lastDumpedSignature: String? = null
     private var lastProcessedLegKey: String? = null
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        if (event.packageName != "com.joofunn.idart") return
+    companion object {
+        const val PKG_SCOREBUDDY = "com.joofunn.idart"
+        const val PKG_SMARTNESS = "com.evisionhk.smartness"
+        val TRACKED_PACKAGES = setOf(PKG_SCOREBUDDY, PKG_SMARTNESS)
+    }
 
-        // Debounce: wait for the screen to stop changing for 200ms before
-        // reading it, otherwise we read half-rendered frames mid-animation.
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (event.packageName !in TRACKED_PACKAGES) return
+
         pendingCheck?.let { debounceHandler.removeCallbacks(it) }
         val runnable = Runnable { handleStableContent() }
         pendingCheck = runnable
@@ -29,11 +33,8 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
 
     private fun handleStableContent() {
         val root = rootInActiveWindow ?: return
-        // Guard: only proceed if Scorebuddy is still the foreground app right
-        // now. If the user already switched apps (e.g. to check the dump)
-        // before this delayed read ran, rootInActiveWindow would return the
-        // OTHER app's content instead - skip rather than save/detect on it.
-        if (root.packageName?.toString() != "com.joofunn.idart") {
+        val activePackage = root.packageName?.toString()
+        if (activePackage !in TRACKED_PACKAGES) {
             root.recycle()
             return
         }
@@ -42,16 +43,19 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
         collect(root, 0, nodes, dumpLines)
         root.recycle()
 
-        // Keep saving diagnostic dumps too - cheap, and useful if detection
-        // ever misses a leg so we can see exactly what was on screen.
         val signature = dumpLines.joinToString("\n").hashCode().toString()
         if (signature != lastDumpedSignature) {
             lastDumpedSignature = signature
             ResultsStore.saveDump(applicationContext, dumpLines.joinToString("\n"))
         }
 
-        val result = LegDetector.detect(nodes) ?: return
-        if (result.legKey == lastProcessedLegKey) return // already recorded this leg
+        val result = when (activePackage) {
+            PKG_SCOREBUDDY -> LegDetector.detect(nodes)
+            PKG_SMARTNESS -> null // detector not implemented yet - dump-only for now
+            else -> null
+        } ?: return
+
+        if (result.legKey == lastProcessedLegKey) return
 
         Log.i(TAG, "Leg finished (${result.legKey}): placements = ${result.orderedPlayers}")
         val scored = PlacementScorer.score(result.orderedPlayers)
@@ -59,8 +63,6 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
         lastProcessedLegKey = result.legKey
     }
 
-    /** Walks the accessibility tree, collecting both a structured NodeText list
-     *  (used for leg-end detection) and a human-readable dump (diagnostics). */
     private fun collect(
         node: AccessibilityNodeInfo,
         depth: Int,
