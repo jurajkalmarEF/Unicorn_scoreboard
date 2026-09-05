@@ -1,93 +1,76 @@
 package com.example.scorebuddystats
 
-import android.accessibilityservice.AccessibilityService
-import android.graphics.Rect
-import android.os.Handler
-import android.os.Looper
-import android.util.Log
-import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
+import kotlin.math.abs
 
-class ScorebuddyAccessibilityService : AccessibilityService() {
+/**
+ * Detects Scorebuddy's "GAME SUMMARY" screen, which appears after each leg
+ * and shows a table already sorted by placement:
+ *
+ *   Rank   Name       Score   Darts   3d Av.  9d Av.  180  140+  100+
+ *   1      ROBOT 3    501     44      34,2    74,0    0    0     0
+ *   2      ROBOT 2    387     42      27,6    34,0    0    0     0
+ *   3      AI         137     42      9,8     0,0     0    0     0
+ *
+ * We don't need to compute placement ourselves here - Scorebuddy already
+ * ranks the players. We just read off (rank, name) pairs from the table.
+ */
+object LegDetector {
 
-    private val TAG = "ScorebuddyA11y"
-    private val debounceHandler = Handler(Looper.getMainLooper())
-    private var pendingCheck: Runnable? = null
-    private var lastDumpedSignature: String? = null
-    private var lastProcessedLegKey: String? = null
+    data class LegEndResult(val legKey: String, val orderedPlayers: List<String>)
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        if (event.packageName != "com.joofunn.idart") return
+    private val rankRegex = Regex("^\\d{1,2}$")
+    private val excludedLabels = setOf(
+        "EXIT", "NEXT LEG", "GAME SUMMARY", "SCROLL", "RANK", "NAME",
+        "SCORE", "DARTS", "3D AV.", "9D AV.", "180", "140+", "100+"
+    )
 
-        // Debounce: wait for the screen to stop changing for 200ms before
-        // reading it, otherwise we read half-rendered frames mid-animation.
-        pendingCheck?.let { debounceHandler.removeCallbacks(it) }
-        val runnable = Runnable { handleStableContent() }
-        pendingCheck = runnable
-        debounceHandler.postDelayed(runnable, 200)
-    }
+    fun detect(nodes: List<NodeText>): LegEndResult? {
+        val titleNode = nodes.firstOrNull { it.text.trim().equals("GAME SUMMARY", ignoreCase = true) }
+            ?: return null
+        val rankHeader = nodes.firstOrNull { it.text.trim().equals("Rank", ignoreCase = true) }
+            ?: return null
+        val scoreHeader = nodes.firstOrNull { it.text.trim().equals("Score", ignoreCase = true) }
+            ?: return null
 
-    private fun handleStableContent() {
-        val root = rootInActiveWindow ?: return
-        // Guard: only proceed if Scorebuddy is still the foreground app right
-        // now. If the user already switched apps (e.g. to check the dump)
-        // before this delayed read ran, rootInActiveWindow would return the
-        // OTHER app's content instead - skip rather than save/detect on it.
-        if (root.packageName?.toString() != "com.joofunn.idart") {
-            root.recycle()
-            return
+        // Only look at nodes below the header row, and left of the Score column
+        // (that region can only contain Rank numbers and player Names).
+        val bodyNodes = nodes.filter {
+            it.top > rankHeader.bottom &&
+                it !== titleNode &&
+                it.text.trim().uppercase() !in excludedLabels
         }
-        val nodes = mutableListOf<NodeText>()
-        val dumpLines = mutableListOf<String>()
-        collect(root, 0, nodes, dumpLines)
-        root.recycle()
+        if (bodyNodes.isEmpty()) return null
 
-        // Keep saving diagnostic dumps too - cheap, and useful if detection
-        // ever misses a leg so we can see exactly what was on screen.
-        val signature = dumpLines.joinToString("\n").hashCode().toString()
-        if (signature != lastDumpedSignature) {
-            lastDumpedSignature = signature
-            ResultsStore.saveDump(applicationContext, dumpLines.joinToString("\n"))
+        // Row height reference, used to cluster nodes into rows.
+        val avgHeight = bodyNodes.map { it.bottom - it.top }.average().takeIf { it > 0 } ?: 30.0
+        val rowTolerance = (avgHeight * 0.7).toInt().coerceAtLeast(10)
+
+        // Cluster into rows by vertical position.
+        val sorted = bodyNodes.sortedBy { it.top }
+        val rows = mutableListOf<MutableList<NodeText>>()
+        for (node in sorted) {
+            val row = rows.lastOrNull { row -> abs(row.first().centerY - node.centerY) < rowTolerance }
+            if (row != null) row.add(node) else rows.add(mutableListOf(node))
         }
 
-        val result = LegDetector.detect(nodes) ?: return
-        if (result.legKey == lastProcessedLegKey) return // already recorded this leg
+        data class RankedRow(val rank: Int, val name: String, val rowSignature: String)
 
-        Log.i(TAG, "Leg finished (${result.legKey}): placements = ${result.orderedPlayers}")
-        val scored = PlacementScorer.score(result.orderedPlayers)
-        ResultsStore.saveLegResult(applicationContext, scored)
-        lastProcessedLegKey = result.legKey
-    }
+        val rankedRows = rows.mapNotNull { row ->
+            val sortedRow = row.sortedBy { it.left }
+            val rankNode = sortedRow.getOrNull(0) ?: return@mapNotNull null
+            val nameNode = sortedRow.getOrNull(1) ?: return@mapNotNull null
+            if (!rankRegex.matches(rankNode.text.trim())) return@mapNotNull null
+            if (rankRegex.matches(nameNode.text.trim())) return@mapNotNull null // name must not be numeric
 
-    /** Walks the accessibility tree, collecting both a structured NodeText list
-     *  (used for leg-end detection) and a human-readable dump (diagnostics). */
-    private fun collect(
-        node: AccessibilityNodeInfo,
-        depth: Int,
-        nodesOut: MutableList<NodeText>,
-        dumpOut: MutableList<String>
-    ) {
-        val text = node.text?.toString()
-        val desc = node.contentDescription?.toString()
-        val displayText = when {
-            !text.isNullOrBlank() -> text
-            !desc.isNullOrBlank() -> desc
-            else -> null
+            val rowSignature = sortedRow.joinToString("|") { it.text }
+            RankedRow(rank = rankNode.text.trim().toInt(), name = nameNode.text.trim(), rowSignature = rowSignature)
         }
-        if (displayText != null) {
-            val bounds = Rect()
-            node.getBoundsInScreen(bounds)
-            nodesOut.add(NodeText(displayText, bounds.left, bounds.top, bounds.right, bounds.bottom))
-            dumpOut.add("${"  ".repeat(depth)}[${node.className}] \"$displayText\" bounds=$bounds")
-        }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            collect(child, depth + 1, nodesOut, dumpOut)
-            child.recycle()
-        }
-    }
 
-    override fun onInterrupt() {
-        Log.w(TAG, "Accessibility service interrupted")
+        if (rankedRows.isEmpty()) return null
+
+        val orderedPlayers = rankedRows.sortedBy { it.rank }.map { it.name }
+        val legKey = rankedRows.sortedBy { it.rank }.joinToString(";") { it.rowSignature }
+
+        return LegEndResult(legKey = legKey, orderedPlayers = orderedPlayers)
     }
 }
