@@ -1,68 +1,92 @@
-package com.example.scorebuddystats
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
 
-import android.content.ActivityNotFoundException
-import android.content.Intent
-import android.net.Uri
-import android.os.Bundle
-import android.provider.Settings as AndroidSettings
-import android.widget.Button
-import android.widget.EditText
-import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.FileProvider
-import java.io.File
+<LinearLayout
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="20dp">
 
-class MainActivity : AppCompatActivity() {
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textStyle="bold"
+        android:textSize="18sp"
+        android:text="1. Povoľ Accessibility Service" />
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+    <Button
+        android:id="@+id/btnOpenSettings"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Otvoriť nastavenia zjednodušenia" />
 
-        val editWebhookUrl = findViewById<EditText>(R.id.editWebhookUrl)
-        editWebhookUrl.setText(Settings.getWebhookUrl(this).orEmpty())
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:textStyle="bold"
+        android:textSize="18sp"
+        android:text="2. Supabase pripojenie" />
 
-        findViewById<Button>(R.id.btnOpenSettings).setOnClickListener {
-            try {
-                startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
-            } catch (e: ActivityNotFoundException) {
-                Toast.makeText(this, "Nepodarilo sa otvoriť nastavenia", Toast.LENGTH_SHORT).show()
-            }
-        }
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="REST URL (napr. https://xxxx.supabase.co/rest/v1/)" />
 
-        findViewById<Button>(R.id.btnSaveWebhook).setOnClickListener {
-            Settings.setWebhookUrl(this, editWebhookUrl.text.toString().trim())
-            Toast.makeText(this, "Uložené", Toast.LENGTH_SHORT).show()
-        }
+    <EditText
+        android:id="@+id/editSupabaseUrl"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="https://xxxx.supabase.co/rest/v1/" />
 
-        findViewById<Button>(R.id.btnShareLatestDump).setOnClickListener {
-            val dumpsDir = ResultsStore.dumpsDir(this)
-            val latest = dumpsDir.listFiles()?.maxByOrNull { it.lastModified() }
-            if (latest == null) {
-                Toast.makeText(this, "Zatiaľ žiadny dump. Otvor Scorebuddy a odohraj leg.", Toast.LENGTH_LONG).show()
-            } else {
-                shareFile(latest)
-            }
-        }
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="API kľúč (publishable/anon)" />
 
-        findViewById<Button>(R.id.btnShareResultsCsv).setOnClickListener {
-            val csv = File(ResultsStore.resultsDir(this), "leg_results.csv")
-            if (!csv.exists()) {
-                Toast.makeText(this, "Zatiaľ žiadne výsledky.", Toast.LENGTH_LONG).show()
-            } else {
-                shareFile(csv)
-            }
-        }
-    }
+    <EditText
+        android:id="@+id/editSupabaseKey"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="sb_publishable_..." />
 
-    private fun shareFile(file: File) {
-        val uri: Uri = FileProvider.getUriForFile(
-            this, "com.example.scorebuddystats.fileprovider", file
-        )
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        startActivity(Intent.createChooser(intent, "Zdieľať"))
-    }
-}
+    <Button
+        android:id="@+id/btnSaveSupabase"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Uložiť" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:textStyle="bold"
+        android:textSize="18sp"
+        android:text="3. Zachytené dumpy obrazovky" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Odohraj leg v Scorebuddy appke, potom sem klikni a pošli mi posledný dump." />
+
+    <Button
+        android:id="@+id/btnShareLatestDump"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Zdieľať posledný dump" />
+
+    <Button
+        android:id="@+id/btnShareResultsCsv"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Zdieľať results.csv" />
+
+</LinearLayout>
+</ScrollView>
