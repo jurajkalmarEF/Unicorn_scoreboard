@@ -6,7 +6,7 @@ cez Android Accessibility Service. V tejto fáze len **zaznamenáva presnú
 spoľahlivé rozpoznanie obrazovky s výsledkom legu.
 
 Bodovací systém je už hotový a otestovaný (`PlacementScorer.kt`):
-posledné miesto = 1 bod, predposledné = 2, ..., víťaz = N bodov
+posledné miesto = 1 bod, predposledné = 2, ..., víťaz = N bodov 
 (N = počet hráčov). Zapojí sa hneď, ako budeme mať presnú detekciu
 obrazovky z reálneho dumpu.
 
