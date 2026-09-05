@@ -25,11 +25,11 @@ object LegDetector {
     )
 
     fun detect(nodes: List<NodeText>): LegEndResult? {
-        val titleNode = nodes.firstOrNull { it.text.equals("GAME SUMMARY", ignoreCase = true) }
+        val titleNode = nodes.firstOrNull { it.text.trim().equals("GAME SUMMARY", ignoreCase = true) }
             ?: return null
-        val rankHeader = nodes.firstOrNull { it.text.equals("Rank", ignoreCase = true) }
+        val rankHeader = nodes.firstOrNull { it.text.trim().equals("Rank", ignoreCase = true) }
             ?: return null
-        val scoreHeader = nodes.firstOrNull { it.text.equals("Score", ignoreCase = true) }
+        val scoreHeader = nodes.firstOrNull { it.text.trim().equals("Score", ignoreCase = true) }
             ?: return null
 
         // Only look at nodes below the header row, and left of the Score column
@@ -37,7 +37,7 @@ object LegDetector {
         val bodyNodes = nodes.filter {
             it.top > rankHeader.bottom &&
                 it !== titleNode &&
-                it.text.uppercase() !in excludedLabels
+                it.text.trim().uppercase() !in excludedLabels
         }
         if (bodyNodes.isEmpty()) return null
 
@@ -59,11 +59,11 @@ object LegDetector {
             val sortedRow = row.sortedBy { it.left }
             val rankNode = sortedRow.getOrNull(0) ?: return@mapNotNull null
             val nameNode = sortedRow.getOrNull(1) ?: return@mapNotNull null
-            if (!rankRegex.matches(rankNode.text)) return@mapNotNull null
-            if (rankRegex.matches(nameNode.text)) return@mapNotNull null // name must not be numeric
+            if (!rankRegex.matches(rankNode.text.trim())) return@mapNotNull null
+            if (rankRegex.matches(nameNode.text.trim())) return@mapNotNull null // name must not be numeric
 
             val rowSignature = sortedRow.joinToString("|") { it.text }
-            RankedRow(rank = rankNode.text.toInt(), name = nameNode.text, rowSignature = rowSignature)
+            RankedRow(rank = rankNode.text.trim().toInt(), name = nameNode.text.trim(), rowSignature = rowSignature)
         }
 
         if (rankedRows.isEmpty()) return null
