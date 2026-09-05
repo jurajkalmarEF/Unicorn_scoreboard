@@ -31,11 +31,11 @@ object ResultsStore {
     }
 
     /** Appends the leg result to a local CSV (always works, no network needed) and
-     *  fires a webhook POST if a URL is configured in settings. */
-    fun saveLegResult(context: Context, legResult: List<PlayerResult>) {
+     *  uploads it to the Supabase table configured in settings. */
+    fun saveLegResult(context: Context, legResult: List<PlayerResult>, legKey: String) {
         val timestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
 
-        // 1) local CSV, always written
+        // 1) local CSV, always written, on the calling thread (fast, no I/O contention risk here)
         val csv = File(resultsDir(context), "leg_results.csv")
         val isNew = !csv.exists()
         csv.appendText(buildString {
@@ -46,38 +46,54 @@ object ResultsStore {
         })
         Log.i(TAG, "Saved leg result locally: $legResult")
 
-        // 2) optional webhook upload
-        val webhookUrl = Settings.getWebhookUrl(context)
-        if (!webhookUrl.isNullOrBlank()) {
-            uploadToWebhook(webhookUrl, timestamp, legResult)
+        // 2) Supabase upload - run on a background thread, network calls are not
+        // allowed on the main thread (this is called from the accessibility
+        // service's main-looper handler).
+        val supabaseUrl = Settings.getSupabaseUrl(context)
+        val supabaseKey = Settings.getSupabaseKey(context)
+        if (supabaseUrl.isNotBlank() && supabaseKey.isNotBlank()) {
+            Thread {
+                uploadToSupabase(supabaseUrl, supabaseKey, legKey, legResult)
+            }.start()
         }
     }
 
-    private fun uploadToWebhook(url: String, timestamp: String, legResult: List<PlayerResult>) {
+    private fun uploadToSupabase(
+        baseUrl: String,
+        apiKey: String,
+        legKey: String,
+        legResult: List<PlayerResult>
+    ) {
         try {
-            val playersArray = JSONArray()
+            val endpoint = baseUrl.trimEnd('/') + "/leg_results"
+
+            val rowsArray = JSONArray()
             legResult.forEach { r ->
-                playersArray.put(JSONObject().apply {
-                    put("player", r.playerName)
+                rowsArray.put(JSONObject().apply {
+                    put("leg_key", legKey)
+                    put("player_name", r.playerName)
                     put("placement", r.placement)
                     put("points", r.points)
                 })
             }
-            val body = JSONObject().apply {
-                put("timestamp", timestamp)
-                put("results", playersArray)
-            }
 
             val request = Request.Builder()
-                .url(url)
-                .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .url(endpoint)
+                .addHeader("apikey", apiKey)
+                .addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Prefer", "return=minimal")
+                .post(rowsArray.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                 .build()
 
             client.newCall(request).execute().use { response ->
-                Log.i(TAG, "Webhook upload response: ${response.code}")
+                if (response.isSuccessful) {
+                    Log.i(TAG, "Supabase upload OK: ${response.code}")
+                } else {
+                    Log.e(TAG, "Supabase upload failed: ${response.code} ${response.body?.string()}")
+                }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Webhook upload failed, result is still saved locally", e)
+            Log.e(TAG, "Supabase upload failed, result is still saved locally", e)
         }
     }
 
