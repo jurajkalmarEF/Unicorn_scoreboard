@@ -19,16 +19,24 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.packageName != "com.joofunn.idart") return
 
-        // Debounce: wait for the screen to stop changing for 400ms before
+        // Debounce: wait for the screen to stop changing for 200ms before
         // reading it, otherwise we read half-rendered frames mid-animation.
         pendingCheck?.let { debounceHandler.removeCallbacks(it) }
         val runnable = Runnable { handleStableContent() }
         pendingCheck = runnable
-        debounceHandler.postDelayed(runnable, 400)
+        debounceHandler.postDelayed(runnable, 200)
     }
 
     private fun handleStableContent() {
         val root = rootInActiveWindow ?: return
+        // Guard: only proceed if Scorebuddy is still the foreground app right
+        // now. If the user already switched apps (e.g. to check the dump)
+        // before this delayed read ran, rootInActiveWindow would return the
+        // OTHER app's content instead - skip rather than save/detect on it.
+        if (root.packageName?.toString() != "com.joofunn.idart") {
+            root.recycle()
+            return
+        }
         val nodes = mutableListOf<NodeText>()
         val dumpLines = mutableListOf<String>()
         collect(root, 0, nodes, dumpLines)
