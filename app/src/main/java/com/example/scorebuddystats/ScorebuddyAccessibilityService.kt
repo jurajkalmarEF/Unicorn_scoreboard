@@ -49,18 +49,20 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
             ResultsStore.saveDump(applicationContext, dumpLines.joinToString("\n"))
         }
 
-        val result = when (activePackage) {
-            PKG_SCOREBUDDY -> LegDetector.detect(nodes)
-            PKG_SMARTNESS -> null // detector not implemented yet - dump-only for now
+        val result: Pair<String, List<String>>? = when (activePackage) {
+            PKG_SCOREBUDDY -> LegDetector.detect(nodes)?.let { it.legKey to it.orderedPlayers }
+            PKG_SMARTNESS -> SmartnessDetector.detect(nodes)?.let { it.legKey to it.orderedPlayers }
             else -> null
-        } ?: return
+        }
+        if (result == null) return
+        val (legKey, orderedPlayers) = result
 
-        if (result.legKey == lastProcessedLegKey) return
+        if (legKey == lastProcessedLegKey) return
 
-        Log.i(TAG, "Leg finished (${result.legKey}): placements = ${result.orderedPlayers}")
-        val scored = PlacementScorer.score(result.orderedPlayers)
-        ResultsStore.saveLegResult(applicationContext, scored, result.legKey)
-        lastProcessedLegKey = result.legKey
+        Log.i(TAG, "Leg finished ($legKey): placements = $orderedPlayers")
+        val scored = PlacementScorer.score(orderedPlayers)
+        ResultsStore.saveLegResult(applicationContext, scored, legKey)
+        lastProcessedLegKey = legKey
     }
 
     private fun collect(
@@ -68,7 +70,7 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
         depth: Int,
         nodesOut: MutableList<NodeText>,
         dumpOut: MutableList<String>
-    ) {
+            ) {
         val text = node.text?.toString()
         val desc = node.contentDescription?.toString()
         val displayText = when {
