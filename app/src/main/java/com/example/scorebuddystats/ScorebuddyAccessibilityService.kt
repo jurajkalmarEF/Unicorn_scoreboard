@@ -15,6 +15,7 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
     private var pendingCheck: Runnable? = null
     private var lastDumpedSignature: String? = null
     private var lastProcessedLegKey: String? = null
+    private var cheer: VisitCheer? = null
 
     companion object {
         const val PKG_SCOREBUDDY = "com.joofunn.idart"
@@ -47,6 +48,10 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
         if (signature != lastDumpedSignature) {
             lastDumpedSignature = signature
             ResultsStore.saveDump(applicationContext, dumpLines.joinToString("\n"))
+        }
+
+        if (activePackage == PKG_SCOREBUDDY) {
+            VisitTracker.update(nodes)?.let { visit -> cheer?.onVisit(visit) }
         }
 
         val result: Pair<String, List<String>>? = when (activePackage) {
@@ -89,6 +94,17 @@ class ScorebuddyAccessibilityService : AccessibilityService() {
             collect(child, depth + 1, nodesOut, dumpOut)
             child.recycle()
         }
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        if (cheer == null) cheer = VisitCheer(applicationContext)
+    }
+
+    override fun onDestroy() {
+        cheer?.shutdown()
+        cheer = null
+        super.onDestroy()
     }
 
     override fun onInterrupt() {
