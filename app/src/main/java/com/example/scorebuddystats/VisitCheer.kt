@@ -2,6 +2,7 @@ package com.example.scorebuddystats
 
 import android.content.Context
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
 
@@ -80,14 +81,32 @@ object VisitTracker {
   }
 }
 
-// Plays a funny Slovak voice line (text-to-speech) for big visits
+// Plays a darts-caller shout in English (exact score) and then a funny Slovak line
 class VisitCheer(context: Context) {
   private val TAG = "VisitCheer"
-  private var ready = false
-  private var tts: TextToSpeech? = null
+  private var skReady = false
+  private var enReady = false
+  private var ttsSk: TextToSpeech? = null
+  private var ttsEn: TextToSpeech? = null
+  @Volatile private var pendingSk: String? = null
 
   companion object {
     const val THRESHOLD = 100
+
+    private val ONES = arrayOf(
+      "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+      "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+      "eighteen", "nineteen"
+      )
+    private val TENS = arrayOf("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty")
+
+    private fun words(n: Int): String =
+    if (n < 20) ONES[n] else TENS[n / 10] + (if (n % 10 != 0) " " + ONES[n % 10] else "")
+
+    fun callerText(total: Int): String {
+      val rem = total - 100
+      return if (rem == 0) "One hundred!" else "One hundred, and " + words(rem) + "!"
+    }
 
     // Lines by tens: key = 100, 110, ... 180
     private val LINES: Map<Int, List<String>> = mapOf(
@@ -104,16 +123,36 @@ class VisitCheer(context: Context) {
   }
 
   init {
-    tts = TextToSpeech(context.applicationContext) { status ->
+    ttsSk = TextToSpeech(context.applicationContext) { status ->
       if (status == TextToSpeech.SUCCESS) {
-        val engine = tts
+        val engine = ttsSk
         val r = engine?.setLanguage(Locale("sk", "SK")) ?: TextToSpeech.LANG_NOT_SUPPORTED
         if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
           engine?.setLanguage(Locale("cs", "CZ"))
         }
-        ready = true
+        skReady = true
       } else {
-        Log.w(TAG, "TextToSpeech init failed: $status")
+        Log.w(TAG, "Slovak TextToSpeech init failed: $status")
+      }
+    }
+    ttsEn = TextToSpeech(context.applicationContext) { status ->
+      if (status == TextToSpeech.SUCCESS) {
+        val engine = ttsEn
+        engine?.setLanguage(Locale.UK)
+        engine?.setSpeechRate(0.75f)
+        engine?.setPitch(0.8f)
+        engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+          override fun onStart(utteranceId: String?) {}
+          override fun onError(utteranceId: String?) {}
+          override fun onDone(utteranceId: String?) {
+            val joke = pendingSk
+            pendingSk = null
+            if (utteranceId == "caller" && joke != null) speakSk(joke)
+          }
+        })
+        enReady = true
+      } else {
+        Log.w(TAG, "English TextToSpeech init failed: $status")
       }
     }
   }
@@ -122,18 +161,26 @@ class VisitCheer(context: Context) {
     Log.i(TAG, "Visit ${visit.player}: ${visit.start} -> ${visit.end} = ${visit.total}")
     if (visit.total < THRESHOLD || visit.total > 180) return
     val bucket = (visit.total / 10) * 10
-    val pool = LINES[bucket] ?: return
-    speak(pool.random())
+    val joke = LINES[bucket]?.random()
+    if (enReady) {
+      pendingSk = joke
+      ttsEn?.speak(callerText(visit.total), TextToSpeech.QUEUE_FLUSH, null, "caller")
+    } else if (joke != null) {
+      speakSk(joke)
+    }
   }
 
-  private fun speak(text: String) {
-    if (!ready) return
-    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "cheer")
+  private fun speakSk(text: String) {
+    if (!skReady) return
+    ttsSk?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "joke")
   }
 
   fun shutdown() {
-    tts?.stop()
-    tts?.shutdown()
-    tts = null
+    ttsSk?.stop()
+    ttsSk?.shutdown()
+    ttsSk = null
+    ttsEn?.stop()
+    ttsEn?.shutdown()
+    ttsEn = null
   }
 }
