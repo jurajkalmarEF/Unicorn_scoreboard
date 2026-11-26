@@ -2,20 +2,26 @@ package com.example.scorebuddystats
 
 import android.content.Context
 import android.media.AudioManager
+import android.media.MediaPlayer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import java.io.File
 import java.util.Locale
 
-// One finished visit of a player: remaining score at start and end of the turn
+/** One finished 3-dart visit of a player: remaining score at the start and at the end of the turn. */
 data class Visit(val player: String, val start: Int, val end: Int) {
 val total: Int get() = start - end
 }
 
-// Reads the Scorebuddy game screen (left panel = player on the throw) and works out
-// how many points a player scored in one visit. A visit ends when the active player
-// changes or when the remaining score reaches 0.
+/**
+ * Reads the Scorebuddy game screen (left panel = player on the throw) and works out
+ * how many points a player scored in one visit. A visit ends when the active player
+ * changes or when the remaining score reaches 0 (checkout).
+ */
 object VisitTracker {
 private val NUMBER = Regex("^\\d{1,3}$")
 private val DART = Regex("^(?i)([SDT]\\d{1,2}|BULL|25|MISS)$")
@@ -83,18 +89,45 @@ return result
 }
 }
 
-// Darts caller: announces every visit in English, then a funny Slovak line for 100+
+// Darts caller: plays recorded clips from assets (falls back to text-to-speech),
+// then a funny Slovak line for 100+
 class VisitCheer(context: Context) {
 private val appContext = context.applicationContext
 private val TAG = "VisitCheer"
+private val handler = Handler(Looper.getMainLooper())
 private var skReady = false
 private var enReady = false
 private var ttsSk: TextToSpeech? = null
 private var ttsEn: TextToSpeech? = null
-@Volatile private var pendingSk: String? = null
+private var player: MediaPlayer? = null
+private val queue = ArrayDeque<Step>()
+@Volatile private var gen = 0
+private val assetNames: Set<String> by lazy {
+try { appContext.assets.list("")?.toSet() ?: emptySet() } catch (e: Exception) { emptySet() }
+}
+
+// kind: 0 = recorded clip from assets, 1 = English TTS, 2 = Slovak TTS
+private class Step(val kind: Int, val value: String)
 
 companion object {
 const val THRESHOLD = 100
+
+// Recorded clips (files in app/src/main/assets), keyed by exact visit score
+private val CLIPS = mapOf(
+0 to "no_score.mp3",
+60 to "score_60.mp3",
+80 to "score_80.mp3",
+90 to "score_90.mp3",
+100 to "score_100.mp3",
+120 to "score_120.mp3",
+140 to "score_140.mp3",
+160 to "score_160.mp3",
+177 to "score_177.mp3",
+180 to "score_180.mp3"
+)
+private const val GAME_SHOT = "game_shot.mp3"
+private const val FINISH = "what_a_finish.mp3"
+private const val ON_FIRE = "on_fire.mp3"
 
 private val ONES = arrayOf(
 "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
@@ -126,18 +159,14 @@ if (v != null) return v
 return null
 }
 
-fun callerText(visit: Visit): String {
-val total = visit.total
-val score = when {
+fun scoreText(total: Int): String = when {
 total <= 0 -> "No score"
 total < 100 -> words(total)
 total == 100 -> "One hundred"
 else -> "One hundred, and " + words(total - 100)
 }
-return if (visit.end == 0 && total > 0) "$score! Game shot!" else "$score!"
-}
 
-// Lines by tens: key = 100, 110, ... 180
+// Hlasky podla desiatok: kluc = 100, 110, ... 180 (filmove odkazy, slovenske a ceske)
 private val LINES: Map<Int, List<String>> = mapOf(
 100 to listOf("Stovka! Také hody by sa hodili aj do Pelíškov.", "Stovka! Súper si môže ísť dať pivo."),
 110 to listOf("Sto desať! Terč sa potí ako vo Slnku, seno, jahody.", "Ty si to trafil schválne, však?"),
@@ -152,19 +181,20 @@ private val LINES: Map<Int, List<String>> = mapOf(
 }
 
 init {
-ttsSk = TextToSpeech(context.applicationContext) { status ->
+ttsSk = TextToSpeech(appContext) { status ->
 if (status == TextToSpeech.SUCCESS) {
 val engine = ttsSk
 val r = engine?.setLanguage(Locale("sk", "SK")) ?: TextToSpeech.LANG_NOT_SUPPORTED
 if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
 engine?.setLanguage(Locale("cs", "CZ"))
 }
+engine?.setOnUtteranceProgressListener(stepListener())
 skReady = true
 } else {
 Log.w(TAG, "Slovak TextToSpeech init failed: $status")
 }
 }
-ttsEn = TextToSpeech(context.applicationContext) { status ->
+ttsEn = TextToSpeech(appContext) { status ->
 if (status == TextToSpeech.SUCCESS) {
 val engine = ttsEn
 if (engine != null) {
@@ -173,16 +203,8 @@ val male = pickMaleVoice(engine)
 if (male != null) engine.setVoice(male)
 engine.setSpeechRate(0.85f)
 engine.setPitch(0.7f)
+engine.setOnUtteranceProgressListener(stepListener())
 }
-engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-override fun onStart(utteranceId: String?) {}
-override fun onError(utteranceId: String?) {}
-override fun onDone(utteranceId: String?) {
-val joke = pendingSk
-pendingSk = null
-if (utteranceId == "caller" && joke != null) speakSk(joke)
-}
-})
 enReady = true
 } else {
 Log.w(TAG, "English TextToSpeech init failed: $status")
@@ -190,17 +212,112 @@ Log.w(TAG, "English TextToSpeech init failed: $status")
 }
 }
 
+private fun stepListener() = object : UtteranceProgressListener() {
+override fun onStart(utteranceId: String?) {}
+@Deprecated("Deprecated in Java")
+override fun onError(utteranceId: String?) { next(utteranceId) }
+override fun onDone(utteranceId: String?) { next(utteranceId) }
+private fun next(id: String?) {
+if (id == "step$gen") handler.post { advance() }
+}
+}
+
+private fun clipOrSpeech(name: String?, fallbackText: String): Step =
+if (name != null && assetNames.contains(name)) Step(0, name) else Step(1, fallbackText)
+
 fun onVisit(visit: Visit) {
 Log.i(TAG, "Visit ${visit.player}: ${visit.start} -> ${visit.end} = ${visit.total}")
-if (visit.total < 0 || visit.total > 180) return
-val bucket = (visit.total / 10) * 10
-val joke = if (visit.total >= THRESHOLD) LINES[bucket]?.random() else null
+val total = visit.total
+if (total < 0 || total > 180) return
+
+val steps = mutableListOf<Step>()
+steps.add(clipOrSpeech(CLIPS[total], scoreText(total)))
+val checkout = visit.end == 0 && total > 0
+if (checkout) {
+steps.add(clipOrSpeech(GAME_SHOT, "Game shot!"))
+if (total >= THRESHOLD && assetNames.contains(FINISH)) steps.add(Step(0, FINISH))
+} else if (total >= THRESHOLD) {
+if (total >= 160 && assetNames.contains(ON_FIRE)) steps.add(Step(0, ON_FIRE))
+val joke = LINES[(total / 10) * 10]?.random()
+if (joke != null) steps.add(Step(2, joke))
+}
+
+handler.post {
 boostVolume()
-if (enReady) {
-pendingSk = joke
-ttsEn?.speak(callerText(visit), TextToSpeech.QUEUE_FLUSH, null, "caller")
-} else if (joke != null) {
-speakSk(joke)
+stopAll()
+gen++
+queue.addAll(steps)
+advance()
+}
+}
+
+private fun stopAll() {
+queue.clear()
+try {
+player?.stop()
+player?.release()
+} catch (e: Exception) {
+Log.w(TAG, "player stop failed", e)
+}
+player = null
+ttsEn?.stop()
+ttsSk?.stop()
+}
+
+private fun advance() {
+val step = queue.removeFirstOrNull() ?: return
+when (step.kind) {
+0 -> playClip(step.value)
+1 -> if (enReady) {
+ttsEn?.speak(step.value, TextToSpeech.QUEUE_FLUSH, null, "step$gen")
+} else advance()
+else -> if (skReady) {
+ttsSk?.speak(step.value, TextToSpeech.QUEUE_FLUSH, null, "step$gen")
+} else advance()
+}
+}
+
+private fun assetFile(name: String): File? {
+return try {
+val f = File(appContext.cacheDir, "clip_$name")
+if (!f.exists()) {
+appContext.assets.open(name).use { input ->
+f.outputStream().use { out -> input.copyTo(out) }
+}
+}
+f
+} catch (e: Exception) {
+Log.w(TAG, "Missing clip $name", e)
+null
+}
+}
+
+private fun playClip(name: String) {
+val file = assetFile(name)
+if (file == null) {
+advance()
+return
+}
+try {
+val mp = MediaPlayer()
+mp.setDataSource(file.path)
+mp.setOnCompletionListener { m ->
+m.release()
+if (player === m) player = null
+advance()
+}
+mp.setOnErrorListener { m, _, _ ->
+m.release()
+if (player === m) player = null
+advance()
+true
+}
+mp.prepare()
+player = mp
+mp.start()
+} catch (e: Exception) {
+Log.w(TAG, "Clip playback failed", e)
+advance()
 }
 }
 
@@ -218,16 +335,10 @@ Log.w(TAG, "Could not raise volume", e)
 }
 }
 
-private fun speakSk(text: String) {
-if (!skReady) return
-ttsSk?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "joke")
-}
-
 fun shutdown() {
-ttsSk?.stop()
+stopAll()
 ttsSk?.shutdown()
 ttsSk = null
-ttsEn?.stop()
 ttsEn?.shutdown()
 ttsEn = null
 }
