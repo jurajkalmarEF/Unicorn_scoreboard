@@ -1,8 +1,10 @@
 package com.example.scorebuddystats
 
 import android.content.Context
+import android.media.AudioManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import android.util.Log
 import java.util.Locale
 
@@ -83,6 +85,7 @@ return result
 
 // Darts caller: announces every visit in English, then a funny Slovak line for 100+
 class VisitCheer(context: Context) {
+private val appContext = context.applicationContext
 private val TAG = "VisitCheer"
 private var skReady = false
 private var enReady = false
@@ -102,6 +105,26 @@ private val TENS = arrayOf("", "", "twenty", "thirty", "forty", "fifty", "sixty"
 
 private fun words(n: Int): String =
 if (n < 20) ONES[n] else TENS[n / 10] + (if (n % 10 != 0) " " + ONES[n % 10] else "")
+
+// Known male Google voice codes (en-GB first, then en-US)
+private val MALE_CODES = listOf("-gbb-", "-gbd-", "-iom-", "-iol-", "-tpd-")
+
+private fun pickMaleVoice(engine: TextToSpeech): Voice? {
+val voices = try { engine.voices } catch (e: Exception) { null } ?: return null
+val usable = voices.filter {
+it.locale.language == "en" && !it.isNetworkConnectionRequired &&
+!it.features.contains("notInstalled")
+}
+val named = usable.firstOrNull {
+it.name.contains("male", ignoreCase = true) && !it.name.contains("female", ignoreCase = true)
+}
+if (named != null) return named
+for (code in MALE_CODES) {
+val v = usable.firstOrNull { it.name.contains(code) }
+if (v != null) return v
+}
+return null
+}
 
 fun callerText(visit: Visit): String {
 val total = visit.total
@@ -144,9 +167,13 @@ Log.w(TAG, "Slovak TextToSpeech init failed: $status")
 ttsEn = TextToSpeech(context.applicationContext) { status ->
 if (status == TextToSpeech.SUCCESS) {
 val engine = ttsEn
-engine?.setLanguage(Locale.UK)
-engine?.setSpeechRate(0.75f)
-engine?.setPitch(0.8f)
+if (engine != null) {
+engine.setLanguage(Locale.UK)
+val male = pickMaleVoice(engine)
+if (male != null) engine.setVoice(male)
+engine.setSpeechRate(0.85f)
+engine.setPitch(0.7f)
+}
 engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
 override fun onStart(utteranceId: String?) {}
 override fun onError(utteranceId: String?) {}
@@ -168,11 +195,26 @@ Log.i(TAG, "Visit ${visit.player}: ${visit.start} -> ${visit.end} = ${visit.tota
 if (visit.total < 0 || visit.total > 180) return
 val bucket = (visit.total / 10) * 10
 val joke = if (visit.total >= THRESHOLD) LINES[bucket]?.random() else null
+boostVolume()
 if (enReady) {
 pendingSk = joke
 ttsEn?.speak(callerText(visit), TextToSpeech.QUEUE_FLUSH, null, "caller")
 } else if (joke != null) {
 speakSk(joke)
+}
+}
+
+// Raise the media volume to at least 90 percent so the caller is loud enough
+private fun boostVolume() {
+try {
+val am = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+val target = (max * 0.9).toInt()
+if (am.getStreamVolume(AudioManager.STREAM_MUSIC) < target) {
+am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+}
+} catch (e: Exception) {
+Log.w(TAG, "Could not raise volume", e)
 }
 }
 
